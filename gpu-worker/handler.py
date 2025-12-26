@@ -24,71 +24,82 @@ import torch
 sys.path.insert(0, "/app/hunyuan3d")
 
 
-# Global model references (loaded once, reused across requests)
+# Global model references (loaded/unloaded dynamically to manage VRAM)
 _shape_pipeline = None
 _text2img_pipeline = None
-_models_loaded = False
 
 
-def load_models():
-    """Load Hunyuan3D and text-to-image models (called once on cold start)."""
-    global _shape_pipeline, _text2img_pipeline, _models_loaded
+def load_shape_pipeline():
+    """Load Hunyuan3D model for image-to-3D."""
+    global _shape_pipeline
 
-    if _models_loaded:
-        return _shape_pipeline, _text2img_pipeline
+    if _shape_pipeline is not None:
+        return _shape_pipeline
 
-    print("Loading models...")
+    print("Loading Hunyuan3D for image-to-3D...")
     start_time = time.time()
 
-    try:
-        # Check for GPU
-        if not torch.cuda.is_available():
-            raise RuntimeError("CUDA not available")
+    from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+    _shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        "tencent/Hunyuan3D-2",
+        torch_dtype=torch.float16,
+        device_map="auto",
+    )
+    print(f"Hunyuan3D loaded in {time.time() - start_time:.1f}s")
 
-        device = torch.device("cuda")
-        print(f"Using device: {device}")
-        print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB")
+    return _shape_pipeline
 
-        # Load SDXL-Turbo for text-to-image (fast, ~3GB VRAM)
-        print("Loading SDXL-Turbo for text-to-image...")
-        from diffusers import AutoPipelineForText2Image
-        _text2img_pipeline = AutoPipelineForText2Image.from_pretrained(
-            "stabilityai/sdxl-turbo",
-            torch_dtype=torch.float16,
-            variant="fp16",
-        )
-        _text2img_pipeline.to(device)
-        print(f"SDXL-Turbo loaded in {time.time() - start_time:.1f}s")
 
-        # Load Hunyuan3D for image-to-3D
-        print("Loading Hunyuan3D for image-to-3D...")
-        shape_start = time.time()
-        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-        _shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-            "tencent/Hunyuan3D-2",
-            torch_dtype=torch.float16,
-            device_map="auto",
-        )
-        print(f"Hunyuan3D loaded in {time.time() - shape_start:.1f}s")
+def unload_shape_pipeline():
+    """Unload Hunyuan3D to free VRAM."""
+    global _shape_pipeline
+    if _shape_pipeline is not None:
+        del _shape_pipeline
+        _shape_pipeline = None
+        torch.cuda.empty_cache()
+        print("Hunyuan3D unloaded, VRAM freed")
 
-        # Models loaded successfully
-        _models_loaded = True
-        print(f"All models loaded in {time.time() - start_time:.1f}s")
 
-        return _shape_pipeline, _text2img_pipeline
+def load_text2img_pipeline():
+    """Load SDXL-Turbo for text-to-image."""
+    global _text2img_pipeline
 
-    except Exception as e:
-        print(f"Error loading models: {e}")
-        traceback.print_exc()
-        raise
+    if _text2img_pipeline is not None:
+        return _text2img_pipeline
+
+    print("Loading SDXL-Turbo for text-to-image...")
+    start_time = time.time()
+
+    from diffusers import AutoPipelineForText2Image
+    _text2img_pipeline = AutoPipelineForText2Image.from_pretrained(
+        "stabilityai/sdxl-turbo",
+        torch_dtype=torch.float16,
+        variant="fp16",
+    )
+    _text2img_pipeline.to("cuda")
+    print(f"SDXL-Turbo loaded in {time.time() - start_time:.1f}s")
+
+    return _text2img_pipeline
+
+
+def unload_text2img_pipeline():
+    """Unload SDXL-Turbo to free VRAM."""
+    global _text2img_pipeline
+    if _text2img_pipeline is not None:
+        del _text2img_pipeline
+        _text2img_pipeline = None
+        torch.cuda.empty_cache()
+        print("SDXL-Turbo unloaded, VRAM freed")
 
 
 def text_to_image(prompt: str, steps: int = 4) -> "Image":
     """Generate an image from text using SDXL-Turbo."""
     from PIL import Image
 
-    _, text2img = load_models()
+    # Unload Hunyuan3D first to free VRAM
+    unload_shape_pipeline()
+
+    text2img = load_text2img_pipeline()
 
     print(f"Generating image from prompt: {prompt[:50]}...")
 
@@ -99,7 +110,12 @@ def text_to_image(prompt: str, steps: int = 4) -> "Image":
         guidance_scale=0.0,  # SDXL-Turbo doesn't need guidance
     )
 
-    return result.images[0]
+    image = result.images[0]
+
+    # Unload SDXL-Turbo to make room for Hunyuan3D
+    unload_text2img_pipeline()
+
+    return image
 
 
 def generate_3d(
@@ -132,8 +148,6 @@ def generate_3d(
     from PIL import Image
     import requests
 
-    shape_pipeline, _ = load_models()
-
     # Prepare input image
     input_image = None
 
@@ -164,6 +178,9 @@ def generate_3d(
     # Generate 3D model from image
     print(f"Generating 3D model: steps={steps}, guidance={guidance_scale}")
     start_time = time.time()
+
+    # Load Hunyuan3D (will be unloaded if text2img was used)
+    shape_pipeline = load_shape_pipeline()
 
     result = shape_pipeline(
         image=input_image,
@@ -285,14 +302,20 @@ def handler(job: dict) -> dict:
         }
 
 
-# Pre-load models on container start (reduces cold start time)
+# Pre-load Hunyuan3D on container start (reduces cold start time)
+# SDXL-Turbo is loaded on-demand only for text-to-3D requests
 print("Initializing Hunyuan3D worker...")
 try:
-    load_models()
+    # Check GPU
+    if torch.cuda.is_available():
+        print(f"GPU: {torch.cuda.get_device_name(0)}")
+        print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB")
+
+    load_shape_pipeline()
     print("Worker ready!")
 except Exception as e:
-    print(f"Warning: Failed to pre-load models: {e}")
-    print("Models will be loaded on first request")
+    print(f"Warning: Failed to pre-load model: {e}")
+    print("Model will be loaded on first request")
 
 # Start RunPod handler
 runpod.serverless.start({"handler": handler})
