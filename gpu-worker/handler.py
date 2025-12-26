@@ -56,9 +56,7 @@ def load_model():
             device_map="auto",
         )
 
-        # Optimize for inference
-        _pipeline.enable_xformers_memory_efficient_attention()
-
+        # Model loaded successfully
         _model_loaded = True
         print(f"Model loaded in {time.time() - start_time:.1f}s")
 
