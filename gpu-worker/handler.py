@@ -169,13 +169,14 @@ def generate_3d(
         image=input_image,
         num_inference_steps=steps,
         guidance_scale=guidance_scale,
-        octree_depth=octree_depth,
+        octree_resolution=octree_depth,
     )
 
     print(f"3D generation completed in {time.time() - start_time:.1f}s")
 
-    # Export mesh
-    mesh = result.mesh
+    # Extract mesh from result
+    # Hunyuan3D returns List[List[trimesh.Trimesh]]
+    mesh = result[0][0]
 
     # Export to buffer
     buffer = io.BytesIO()
