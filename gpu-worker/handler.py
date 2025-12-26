@@ -192,8 +192,24 @@ def generate_3d(
     print(f"3D generation completed in {time.time() - start_time:.1f}s")
 
     # Extract mesh from result
-    # Hunyuan3D returns List[List[trimesh.Trimesh]]
-    mesh = result[0][0]
+    # Handle different return types from Hunyuan3D
+    import trimesh as tm
+    if isinstance(result, tm.Trimesh):
+        mesh = result
+    elif isinstance(result, list):
+        # List[List[Trimesh]] or List[Trimesh]
+        if len(result) > 0:
+            if isinstance(result[0], list):
+                mesh = result[0][0]
+            else:
+                mesh = result[0]
+        else:
+            raise ValueError("Empty result from pipeline")
+    else:
+        # Try to access as object attribute
+        mesh = getattr(result, 'mesh', result)
+
+    print(f"Mesh type: {type(mesh)}")
 
     # Export to buffer
     buffer = io.BytesIO()
