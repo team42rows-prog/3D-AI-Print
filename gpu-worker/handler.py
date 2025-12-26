@@ -3,6 +3,9 @@ RunPod Serverless Handler for Hunyuan3D.
 
 This handler runs on RunPod's serverless GPU infrastructure to generate
 3D models from text prompts or images using Hunyuan3D.
+
+Hunyuan3D-2 is an image-to-3D model. For text-to-3D, we first generate
+an image using SDXL-Turbo, then convert that image to 3D.
 """
 
 import base64
@@ -21,25 +24,23 @@ import torch
 sys.path.insert(0, "/app/hunyuan3d")
 
 
-# Global model reference (loaded once, reused across requests)
-_pipeline = None
-_model_loaded = False
+# Global model references (loaded once, reused across requests)
+_shape_pipeline = None
+_text2img_pipeline = None
+_models_loaded = False
 
 
-def load_model():
-    """Load Hunyuan3D model (called once on cold start)."""
-    global _pipeline, _model_loaded
+def load_models():
+    """Load Hunyuan3D and text-to-image models (called once on cold start)."""
+    global _shape_pipeline, _text2img_pipeline, _models_loaded
 
-    if _model_loaded:
-        return _pipeline
+    if _models_loaded:
+        return _shape_pipeline, _text2img_pipeline
 
-    print("Loading Hunyuan3D model...")
+    print("Loading models...")
     start_time = time.time()
 
     try:
-        # Import Hunyuan3D components
-        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
-
         # Check for GPU
         if not torch.cuda.is_available():
             raise RuntimeError("CUDA not available")
@@ -49,23 +50,56 @@ def load_model():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"VRAM: {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f}GB")
 
-        # Load pipeline
-        _pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        # Load SDXL-Turbo for text-to-image (fast, ~3GB VRAM)
+        print("Loading SDXL-Turbo for text-to-image...")
+        from diffusers import AutoPipelineForText2Image
+        _text2img_pipeline = AutoPipelineForText2Image.from_pretrained(
+            "stabilityai/sdxl-turbo",
+            torch_dtype=torch.float16,
+            variant="fp16",
+        )
+        _text2img_pipeline.to(device)
+        print(f"SDXL-Turbo loaded in {time.time() - start_time:.1f}s")
+
+        # Load Hunyuan3D for image-to-3D
+        print("Loading Hunyuan3D for image-to-3D...")
+        shape_start = time.time()
+        from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+        _shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
             "tencent/Hunyuan3D-2",
             torch_dtype=torch.float16,
             device_map="auto",
         )
+        print(f"Hunyuan3D loaded in {time.time() - shape_start:.1f}s")
 
-        # Model loaded successfully
-        _model_loaded = True
-        print(f"Model loaded in {time.time() - start_time:.1f}s")
+        # Models loaded successfully
+        _models_loaded = True
+        print(f"All models loaded in {time.time() - start_time:.1f}s")
 
-        return _pipeline
+        return _shape_pipeline, _text2img_pipeline
 
     except Exception as e:
-        print(f"Error loading model: {e}")
+        print(f"Error loading models: {e}")
         traceback.print_exc()
         raise
+
+
+def text_to_image(prompt: str, steps: int = 4) -> "Image":
+    """Generate an image from text using SDXL-Turbo."""
+    from PIL import Image
+
+    _, text2img = load_models()
+
+    print(f"Generating image from prompt: {prompt[:50]}...")
+
+    # SDXL-Turbo works best with 1-4 steps
+    result = text2img(
+        prompt=prompt,
+        num_inference_steps=steps,
+        guidance_scale=0.0,  # SDXL-Turbo doesn't need guidance
+    )
+
+    return result.images[0]
 
 
 def generate_3d(
@@ -80,12 +114,15 @@ def generate_3d(
     """
     Generate a 3D model from text or image.
 
+    For text-to-3D: First generates an image with SDXL-Turbo, then converts to 3D.
+    For image-to-3D: Directly converts the provided image to 3D.
+
     Args:
-        prompt: Text description (for text-to-3D)
-        image_url: URL to image (for image-to-3D)
-        image_base64: Base64 encoded image (for image-to-3D)
-        steps: Number of inference steps
-        guidance_scale: Guidance scale for generation
+        prompt: Text description (for text-to-3D via SDXL-Turbo)
+        image_url: URL to image (for direct image-to-3D)
+        image_base64: Base64 encoded image (for direct image-to-3D)
+        steps: Number of inference steps for 3D generation
+        guidance_scale: Guidance scale for 3D generation
         octree_depth: Mesh octree depth (higher = more detail)
         output_format: Output format (glb, obj, ply)
 
@@ -95,9 +132,9 @@ def generate_3d(
     from PIL import Image
     import requests
 
-    pipeline = load_model()
+    shape_pipeline, _ = load_models()
 
-    # Prepare input
+    # Prepare input image
     input_image = None
 
     if image_base64:
@@ -106,38 +143,36 @@ def generate_3d(
             image_base64 = image_base64.split(",", 1)[1]
         image_bytes = base64.b64decode(image_base64)
         input_image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        print("Using provided base64 image")
 
     elif image_url:
         # Download image
         response = requests.get(image_url, timeout=30)
         response.raise_for_status()
         input_image = Image.open(io.BytesIO(response.content)).convert("RGB")
+        print(f"Downloaded image from URL: {image_url[:50]}...")
 
-    # Generate 3D model
+    elif prompt:
+        # Text-to-3D: First generate image from text
+        print("Text-to-3D: Generating image from prompt first...")
+        input_image = text_to_image(prompt)
+        print("Image generated, now converting to 3D...")
+
+    else:
+        raise ValueError("Either prompt, image_url, or image_base64 required")
+
+    # Generate 3D model from image
     print(f"Generating 3D model: steps={steps}, guidance={guidance_scale}")
     start_time = time.time()
 
-    if input_image:
-        # Image-to-3D
-        result = pipeline(
-            image=input_image,
-            num_inference_steps=steps,
-            guidance_scale=guidance_scale,
-            octree_depth=octree_depth,
-        )
-    else:
-        # Text-to-3D
-        if not prompt:
-            raise ValueError("Either prompt, image_url, or image_base64 required")
+    result = shape_pipeline(
+        image=input_image,
+        num_inference_steps=steps,
+        guidance_scale=guidance_scale,
+        octree_depth=octree_depth,
+    )
 
-        result = pipeline(
-            prompt=prompt,
-            num_inference_steps=steps,
-            guidance_scale=guidance_scale,
-            octree_depth=octree_depth,
-        )
-
-    print(f"Generation completed in {time.time() - start_time:.1f}s")
+    print(f"3D generation completed in {time.time() - start_time:.1f}s")
 
     # Export mesh
     mesh = result.mesh
@@ -249,14 +284,14 @@ def handler(job: dict) -> dict:
         }
 
 
-# Pre-load model on container start (reduces cold start time)
+# Pre-load models on container start (reduces cold start time)
 print("Initializing Hunyuan3D worker...")
 try:
-    load_model()
+    load_models()
     print("Worker ready!")
 except Exception as e:
-    print(f"Warning: Failed to pre-load model: {e}")
-    print("Model will be loaded on first request")
+    print(f"Warning: Failed to pre-load models: {e}")
+    print("Models will be loaded on first request")
 
 # Start RunPod handler
 runpod.serverless.start({"handler": handler})
