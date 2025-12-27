@@ -8,7 +8,7 @@ This handler runs on RunPod's serverless GPU infrastructure to:
 Hunyuan3D-2 is an image-to-3D model. For text-to-3D, we first generate
 an image using SDXL-Turbo, then convert that image to 3D.
 
-Version: 2.1.0 - mesh_url support for efficient validation
+Version: 2.2.0 - mesh_url support with auto file_type detection
 """
 
 import base64
@@ -354,6 +354,41 @@ def generate_3d(
 # Mesh Validation Functions
 # =============================================================================
 
+def detect_mesh_file_type(mesh_bytes: bytes) -> Optional[str]:
+    """
+    Detect mesh file type from magic bytes.
+
+    Returns file type string for trimesh (stl, glb, obj, ply) or None if unknown.
+    """
+    if len(mesh_bytes) < 10:
+        return None
+
+    # GLB/GLTF binary: starts with "glTF" magic
+    if mesh_bytes[:4] == b'glTF':
+        return 'glb'
+
+    # STL binary: usually starts with header, but check for "solid" (ASCII STL)
+    # ASCII STL starts with "solid "
+    if mesh_bytes[:6].lower() == b'solid ':
+        return 'stl'
+
+    # Binary STL: 80 byte header + 4 byte triangle count
+    # We can't easily distinguish, but if it's not ASCII and not other formats, assume STL
+
+    # PLY: starts with "ply"
+    if mesh_bytes[:3].lower() == b'ply':
+        return 'ply'
+
+    # OBJ: typically starts with comments (#) or vertex (v )
+    first_lines = mesh_bytes[:200].decode('utf-8', errors='ignore').lower()
+    if first_lines.startswith('#') or '\nv ' in first_lines or first_lines.startswith('v '):
+        return 'obj'
+
+    # Default to GLB since that's what Hunyuan3D outputs
+    # and it's the most common format we'll receive
+    return 'glb'
+
+
 def detect_overhangs(mesh, threshold_deg: float = 45.0) -> Dict[str, Any]:
     """
     Detect overhang faces using face normals and ray casting.
@@ -562,6 +597,7 @@ def validate_mesh(
     check_overhangs: bool = True,
     auto_repair: bool = False,
     custom_build_volume: Optional[Dict[str, float]] = None,
+    file_type: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Comprehensive mesh validation for 3D printing.
@@ -573,6 +609,7 @@ def validate_mesh(
         check_overhangs: Whether to analyze overhangs
         auto_repair: Attempt automatic repairs
         custom_build_volume: Override build volume from preset
+        file_type: File type hint (stl, glb, obj, ply) - required for BytesIO loading
 
     Returns:
         Validation results with issues and recommendations
@@ -595,14 +632,26 @@ def validate_mesh(
     # Decode mesh
     try:
         if mesh_base64.startswith("data:"):
+            # Extract file type from data URI if present
+            data_header = mesh_base64.split(",", 0)[0] if "," in mesh_base64 else ""
+            if not file_type and "model/" in data_header:
+                # Try to extract from MIME type like "data:model/stl;base64"
+                mime_part = data_header.split(";")[0].replace("data:", "")
+                if "/" in mime_part:
+                    file_type = mime_part.split("/")[1]
             mesh_base64 = mesh_base64.split(",", 1)[1]
         mesh_bytes = base64.b64decode(mesh_base64)
     except Exception as e:
         return {"error": f"Failed to decode mesh: {e}"}
 
+    # Try to detect file type from magic bytes if not provided
+    if not file_type:
+        file_type = detect_mesh_file_type(mesh_bytes)
+        print(f"Auto-detected file type: {file_type}")
+
     # Load mesh with trimesh
     try:
-        loaded = trimesh.load(io.BytesIO(mesh_bytes))
+        loaded = trimesh.load(io.BytesIO(mesh_bytes), file_type=file_type)
 
         # Handle scene (multiple meshes)
         if isinstance(loaded, trimesh.Scene):
@@ -869,9 +918,11 @@ def handle_validate(job_input: dict) -> dict:
     2. mesh_base64: Base64 encoded mesh data (fallback)
     """
     import requests
+    from urllib.parse import urlparse
 
     mesh_url = job_input.get("mesh_url")
     mesh_base64 = job_input.get("mesh_base64")
+    file_type = job_input.get("file_type")  # Optional hint
 
     if not mesh_url and not mesh_base64:
         return {"error": "Either mesh_url or mesh_base64 must be provided"}
@@ -879,6 +930,24 @@ def handle_validate(job_input: dict) -> dict:
     # If URL provided, download the mesh directly (more efficient than base64 in JSON)
     if mesh_url:
         try:
+            # Extract file extension from URL if file_type not provided
+            if not file_type:
+                parsed = urlparse(mesh_url)
+                path = parsed.path.lower()
+                # Remove query string artifacts
+                path = path.split('?')[0]
+                if path.endswith('.glb'):
+                    file_type = 'glb'
+                elif path.endswith('.stl'):
+                    file_type = 'stl'
+                elif path.endswith('.obj'):
+                    file_type = 'obj'
+                elif path.endswith('.ply'):
+                    file_type = 'ply'
+                elif path.endswith('.gltf'):
+                    file_type = 'gltf'
+                print(f"Detected file_type from URL: {file_type}")
+
             print(f"Downloading mesh from URL: {mesh_url[:100]}...")
             response = requests.get(mesh_url, timeout=60)
             response.raise_for_status()
@@ -895,6 +964,7 @@ def handle_validate(job_input: dict) -> dict:
         check_overhangs=job_input.get("check_overhangs", True),
         auto_repair=job_input.get("auto_repair", False),
         custom_build_volume=job_input.get("build_volume_mm"),
+        file_type=file_type,
     )
 
 
