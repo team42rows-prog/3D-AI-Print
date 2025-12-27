@@ -124,7 +124,8 @@ def generate_3d(
     image_base64: Optional[str] = None,
     steps: int = 30,
     guidance_scale: float = 7.5,
-    octree_depth: int = 8,
+    octree_resolution: int = 256,
+    face_count: int = 50000,
     output_format: str = "glb",
 ) -> bytes:
     """
@@ -139,7 +140,8 @@ def generate_3d(
         image_base64: Base64 encoded image (for direct image-to-3D)
         steps: Number of inference steps for 3D generation
         guidance_scale: Guidance scale for 3D generation
-        octree_depth: Mesh octree depth (higher = more detail)
+        octree_resolution: Mesh octree resolution (128, 256, or 512)
+        face_count: Target number of faces in output mesh
         output_format: Output format (glb, obj, ply)
 
     Returns:
@@ -176,7 +178,7 @@ def generate_3d(
         raise ValueError("Either prompt, image_url, or image_base64 required")
 
     # Generate 3D model from image
-    print(f"Generating 3D model: steps={steps}, guidance={guidance_scale}")
+    print(f"Generating 3D model: steps={steps}, guidance={guidance_scale}, octree_resolution={octree_resolution}, face_count={face_count}")
     start_time = time.time()
 
     # Load Hunyuan3D (will be unloaded if text2img was used)
@@ -186,7 +188,8 @@ def generate_3d(
         image=input_image,
         num_inference_steps=steps,
         guidance_scale=guidance_scale,
-        octree_resolution=octree_depth,
+        octree_resolution=octree_resolution,
+        target_face_count=face_count,
     )
 
     print(f"3D generation completed in {time.time() - start_time:.1f}s")
@@ -237,9 +240,10 @@ def handler(job: dict) -> dict:
             "prompt": "a detailed dragon figurine",  # OR
             "image_url": "https://...",              # OR
             "image_base64": "data:image/png;base64,...",
-            "steps": 30,
-            "guidance_scale": 7.5,
-            "octree_depth": 8,
+            "steps": 30,                   # 20-50, more = better quality
+            "guidance_scale": 7.5,         # 5-10
+            "octree_resolution": 256,      # 128, 256, or 512 (mesh density)
+            "face_count": 50000,           # target face count
             "output_format": "glb"
         }
     }
@@ -266,7 +270,8 @@ def handler(job: dict) -> dict:
         # Generation parameters
         steps = job_input.get("steps", 30)
         guidance_scale = job_input.get("guidance_scale", 7.5)
-        octree_depth = job_input.get("octree_depth", 8)
+        octree_resolution = job_input.get("octree_resolution", 256)
+        face_count = job_input.get("face_count", 50000)
         output_format = job_input.get("output_format", "glb")
 
         # Generate model
@@ -278,7 +283,8 @@ def handler(job: dict) -> dict:
             image_base64=image_base64,
             steps=steps,
             guidance_scale=guidance_scale,
-            octree_depth=octree_depth,
+            octree_resolution=octree_resolution,
+            face_count=face_count,
             output_format=output_format,
         )
 

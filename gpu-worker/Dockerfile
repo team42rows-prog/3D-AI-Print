@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
 
-# System dependencies
+# System dependencies (including OpenGL for PyMeshLab)
 RUN apt-get update && apt-get install -y \
     python3.11 \
     python3.11-dev \
@@ -17,10 +17,15 @@ RUN apt-get update && apt-get install -y \
     wget \
     curl \
     libgl1-mesa-glx \
+    libgl1-mesa-dev \
     libglib2.0-0 \
     libsm6 \
     libxext6 \
     libxrender-dev \
+    libopengl0 \
+    libglx0 \
+    libegl1 \
+    libglvnd0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Set Python 3.11 as default
