@@ -7,6 +7,8 @@ This handler runs on RunPod's serverless GPU infrastructure to:
 
 Hunyuan3D-2 is an image-to-3D model. For text-to-3D, we first generate
 an image using SDXL-Turbo, then convert that image to 3D.
+
+Version: 2.1.0 - mesh_url support for efficient validation
 """
 
 import base64
