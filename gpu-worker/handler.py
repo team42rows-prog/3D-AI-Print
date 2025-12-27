@@ -860,11 +860,31 @@ def handle_generate(job_input: dict) -> dict:
 
 
 def handle_validate(job_input: dict) -> dict:
-    """Handle mesh validation request."""
+    """Handle mesh validation request.
+
+    Supports two input methods:
+    1. mesh_url: URL to download the mesh from (preferred, more efficient)
+    2. mesh_base64: Base64 encoded mesh data (fallback)
+    """
+    import requests
+
+    mesh_url = job_input.get("mesh_url")
     mesh_base64 = job_input.get("mesh_base64")
 
-    if not mesh_base64:
-        return {"error": "No mesh_base64 provided"}
+    if not mesh_url and not mesh_base64:
+        return {"error": "Either mesh_url or mesh_base64 must be provided"}
+
+    # If URL provided, download the mesh directly (more efficient than base64 in JSON)
+    if mesh_url:
+        try:
+            print(f"Downloading mesh from URL: {mesh_url[:100]}...")
+            response = requests.get(mesh_url, timeout=60)
+            response.raise_for_status()
+            mesh_bytes = response.content
+            mesh_base64 = base64.b64encode(mesh_bytes).decode('utf-8')
+            print(f"Downloaded {len(mesh_bytes)} bytes from URL")
+        except requests.RequestException as e:
+            return {"error": f"Failed to download mesh from URL: {str(e)}"}
 
     return validate_mesh(
         mesh_base64=mesh_base64,
@@ -903,7 +923,8 @@ def handler(job: dict) -> dict:
     {
         "input": {
             "action": "validate",
-            "mesh_base64": "...",  # Base64 encoded STL/GLB/OBJ
+            "mesh_url": "https://...",  # URL to download mesh (preferred, efficient)
+            "mesh_base64": "...",  # OR Base64 encoded STL/GLB/OBJ (fallback)
             "printer": "anycubic_photon_m3",  # or "generic_resin", "generic_fdm"
             "target_size_mm": 50.0,  # optional scaling
             "check_overhangs": true,
