@@ -8,7 +8,7 @@ This handler runs on RunPod's serverless GPU infrastructure to:
 Hunyuan3D-2 is an image-to-3D model. For text-to-3D, we first generate
 an image using SDXL-Turbo, then convert that image to 3D.
 
-Version: 2.3.0 - PyMeshFix advanced mesh repair (watertight guaranteed)
+Version: 2.3.1 - PyMeshFix advanced mesh repair + trimesh fix
 """
 
 import base64
@@ -828,8 +828,11 @@ def validate_mesh(
                     repairs_made.append("Fixed normals")
 
                 # Remove degenerate faces
-                mesh.remove_degenerate_faces()
-                repairs_made.append("Removed degenerate faces")
+                try:
+                    mesh.update_faces(mesh.nondegenerate_faces())
+                    repairs_made.append("Removed degenerate faces")
+                except Exception:
+                    pass  # Skip if not supported
 
             # Track final state
             final_watertight = mesh.is_watertight
