@@ -58,7 +58,9 @@ RUN pip install --no-cache-dir \
     safetensors \
     trimesh \
     pygltflib \
-    xformers
+    xformers \
+    pymeshfix \
+    networkx
 
 # Download model weights (will be cached in Docker image)
 # Note: This increases image size but reduces cold start time

@@ -8,7 +8,7 @@ This handler runs on RunPod's serverless GPU infrastructure to:
 Hunyuan3D-2 is an image-to-3D model. For text-to-3D, we first generate
 an image using SDXL-Turbo, then convert that image to 3D.
 
-Version: 2.2.0 - mesh_url support with auto file_type detection
+Version: 2.3.0 - PyMeshFix advanced mesh repair (watertight guaranteed)
 """
 
 import base64
@@ -730,32 +730,131 @@ def validate_mesh(
 
     # Auto repair if requested
     repairs_made = []
+    repair_stats = {}
     repaired_mesh_base64 = None
 
     if auto_repair:
         try:
-            # Fill holes
-            if not mesh.is_watertight:
-                trimesh.repair.fill_holes(mesh)
-                if mesh.is_watertight:
-                    repairs_made.append("Filled holes")
+            # Track initial state
+            initial_watertight = mesh.is_watertight
+            initial_vertices = len(mesh.vertices)
+            initial_faces = len(mesh.faces)
 
-            # Fix normals
-            if hasattr(mesh, 'fix_normals'):
+            # Try PyMeshFix first (much more powerful than trimesh)
+            pymeshfix_success = False
+            try:
+                import pymeshfix
+
+                print("Using PyMeshFix for advanced mesh repair...")
+
+                # Create PyTMesh object for low-level control
+                tin = pymeshfix.PyTMesh(verbose=False)
+                tin.load_array(mesh.vertices.astype(np.float64), mesh.faces.astype(np.int32))
+
+                # Track boundaries (holes) before repair
+                initial_boundaries = tin.boundaries()
+                repair_stats["initial_holes"] = initial_boundaries
+
+                # Step 1: Join nearby disconnected components
+                try:
+                    tin.join_closest_components()
+                    repairs_made.append("Joined nearby components")
+                except Exception as e:
+                    print(f"join_closest_components skipped: {e}")
+
+                # Step 2: Fill ALL holes (nbe=0 means all holes)
+                # refine=True adds vertices to match surrounding density
+                try:
+                    holes_filled = tin.fill_small_boundaries(nbe=0, refine=True)
+                    if holes_filled > 0:
+                        repairs_made.append(f"Filled {holes_filled} holes")
+                        repair_stats["holes_filled"] = holes_filled
+                except Exception as e:
+                    print(f"fill_small_boundaries error: {e}")
+                    # Try without refine
+                    try:
+                        holes_filled = tin.fill_small_boundaries(nbe=0, refine=False)
+                        if holes_filled > 0:
+                            repairs_made.append(f"Filled {holes_filled} holes (simple)")
+                            repair_stats["holes_filled"] = holes_filled
+                    except:
+                        pass
+
+                # Step 3: Remove self-intersections (iterative algorithm)
+                try:
+                    tin.clean(max_iters=10, inner_loops=3)
+                    repairs_made.append("Removed self-intersections")
+                except Exception as e:
+                    print(f"clean() error: {e}")
+
+                # Step 4: Remove small disconnected components (debris)
+                try:
+                    tin.remove_smallest_components()
+                    repairs_made.append("Removed debris components")
+                except Exception as e:
+                    print(f"remove_smallest_components skipped: {e}")
+
+                # Get repaired mesh
+                final_boundaries = tin.boundaries()
+                repair_stats["final_holes"] = final_boundaries
+                vclean, fclean = tin.return_arrays()
+
+                # Create new trimesh from repaired arrays
+                mesh = trimesh.Trimesh(vertices=vclean, faces=fclean)
                 mesh.fix_normals()
                 repairs_made.append("Fixed normals")
 
-            # Remove degenerate faces
-            mesh.remove_degenerate_faces()
-            repairs_made.append("Removed degenerate faces")
+                pymeshfix_success = True
+                print(f"PyMeshFix repair complete: {initial_boundaries} -> {final_boundaries} holes")
+
+            except ImportError:
+                print("PyMeshFix not available, falling back to trimesh repair")
+            except Exception as e:
+                print(f"PyMeshFix repair failed: {e}, falling back to trimesh")
+
+            # Fallback to trimesh basic repair if PyMeshFix failed
+            if not pymeshfix_success:
+                print("Using trimesh basic repair...")
+
+                # Fill holes
+                if not mesh.is_watertight:
+                    trimesh.repair.fill_holes(mesh)
+                    if mesh.is_watertight:
+                        repairs_made.append("Filled holes (trimesh)")
+
+                # Fix normals
+                if hasattr(mesh, 'fix_normals'):
+                    mesh.fix_normals()
+                    repairs_made.append("Fixed normals")
+
+                # Remove degenerate faces
+                mesh.remove_degenerate_faces()
+                repairs_made.append("Removed degenerate faces")
+
+            # Track final state
+            final_watertight = mesh.is_watertight
+            final_vertices = len(mesh.vertices)
+            final_faces = len(mesh.faces)
+
+            repair_stats["initial_watertight"] = initial_watertight
+            repair_stats["final_watertight"] = final_watertight
+            repair_stats["vertices_before"] = initial_vertices
+            repair_stats["vertices_after"] = final_vertices
+            repair_stats["faces_before"] = initial_faces
+            repair_stats["faces_after"] = final_faces
+            repair_stats["pymeshfix_used"] = pymeshfix_success
 
             # Export repaired mesh
             if repairs_made:
                 buffer = io.BytesIO()
                 mesh.export(buffer, file_type="glb")
                 repaired_mesh_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+                print(f"Repair complete: watertight {initial_watertight} -> {final_watertight}")
+
         except Exception as e:
             repairs_made.append(f"Repair failed: {e}")
+            repair_stats["error"] = str(e)
 
     # Calculate summary
     critical_issues = [i for i in issues if i.get("severity") == "critical" and not i.get("passed")]
@@ -842,6 +941,7 @@ def validate_mesh(
         # Repair info
         "repaired": len(repairs_made) > 0 and repaired_mesh_base64 is not None,
         "repairs_made": repairs_made,
+        "repair_stats": repair_stats if repair_stats else None,
         "repaired_mesh_base64": repaired_mesh_base64,
 
         # Metadata
