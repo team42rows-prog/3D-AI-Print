@@ -1,14 +1,14 @@
 """
-RunPod Serverless Handler for Hunyuan3D + Mesh Validation.
+RunPod Serverless Handler for Hunyuan3D-2.1 + Mesh Validation.
 
-This handler runs on RunPod's serverless GPU infrastructure to:
-1. Generate 3D models from text prompts or images using Hunyuan3D
+This handler runs on RunPod's serverless GPU infrastructure (H100) to:
+1. Generate 3D models from text prompts or images using Hunyuan3D-2.1
 2. Validate 3D meshes for printability (overhangs, watertight, etc.)
 
-Hunyuan3D-2.1 is an image-to-3D model. For text-to-3D, we first generate
-an image using SDXL-Turbo, then convert that image to 3D.
+Hunyuan3D-2.1 is an image-to-3D model with PBR texture support.
+For text-to-3D, we first generate an image using SDXL-Turbo, then convert to 3D.
 
-Version: 2.4.0 - Upgraded to Hunyuan3D-2.1 (3.0B model) with maximum quality parameters
+Version: 3.0.0 - Hunyuan3D-2.1 with H100 optimized max quality parameters
 """
 
 import base64
@@ -24,7 +24,9 @@ import numpy as np
 import runpod
 import torch
 
-# Add Hunyuan3D to path
+# Add Hunyuan3D-2.1 to path
+sys.path.insert(0, "/app/hunyuan3d/hy3dshape")
+sys.path.insert(0, "/app/hunyuan3d/hy3dpaint")
 sys.path.insert(0, "/app/hunyuan3d")
 
 
@@ -186,15 +188,14 @@ def load_shape_pipeline():
     print("Loading Hunyuan3D-2.1 (3.0B model) for image-to-3D...")
     start_time = time.time()
 
-    from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+    # Import from hy3dshape (Hunyuan3D-2.1 library)
+    from hy3dshape.pipelines import Hunyuan3DDiTFlowMatchingPipeline
 
-    # Load Hunyuan3D-2.1 - the latest 3.0B parameter model
-    # Note: 2.1 is a separate repo, not a subfolder of 2.0
-    # See: https://huggingface.co/tencent/Hunyuan3D-2.1
+    # Load Hunyuan3D-2.1 - the latest 3.0B parameter model with PBR support
     _shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
         "tencent/Hunyuan3D-2.1",
-        torch_dtype=torch.float16,
-        device_map="auto",
+        device="cuda",
+        dtype=torch.float16,
     )
     print(f"Hunyuan3D-2.1 loaded in {time.time() - start_time:.1f}s")
 
@@ -251,9 +252,7 @@ def text_to_image(prompt: str, steps: int = 4) -> "Image":
     """Generate an image from text using SDXL-Turbo."""
     from PIL import Image
 
-    # Unload Hunyuan3D first to free VRAM
-    unload_shape_pipeline()
-
+    # With H100 80GB we don't need to unload models
     text2img = load_text2img_pipeline()
 
     print(f"Generating image from prompt: {prompt[:50]}...")
@@ -266,10 +265,6 @@ def text_to_image(prompt: str, steps: int = 4) -> "Image":
     )
 
     image = result.images[0]
-
-    # Unload SDXL-Turbo to make room for Hunyuan3D
-    unload_text2img_pipeline()
-
     return image
 
 
@@ -277,10 +272,11 @@ def generate_3d(
     prompt: Optional[str] = None,
     image_url: Optional[str] = None,
     image_base64: Optional[str] = None,
-    steps: int = 50,
+    steps: int = 100,
     guidance_scale: float = 7.5,
-    octree_resolution: int = 384,
-    face_count: int = 90000,
+    dual_guidance_scale: float = 10.5,
+    octree_resolution: int = 512,
+    num_chunks: int = 12000,
     output_format: str = "glb",
 ) -> bytes:
     """
@@ -289,11 +285,12 @@ def generate_3d(
     For text-to-3D: First generates an image with SDXL-Turbo, then converts to 3D.
     For image-to-3D: Directly converts the provided image to 3D.
 
-    Default parameters optimized for maximum quality with Hunyuan3D-2.1:
-    - steps: 50 (default for v2.1, higher = more detail)
+    H100 optimized parameters for MAXIMUM quality:
+    - steps: 100 (maximum detail, more iterations)
     - guidance_scale: 7.5 (balanced adherence to input)
-    - octree_resolution: 384 (default for v2.1, higher = finer geometric detail)
-    - face_count: 90000 (high detail mesh output)
+    - dual_guidance_scale: 10.5 (enhanced dual guidance)
+    - octree_resolution: 512 (maximum geometric detail)
+    - num_chunks: 12000 (higher processing chunks for detail)
     """
     from PIL import Image
     import requests
@@ -323,17 +320,21 @@ def generate_3d(
         raise ValueError("Either prompt, image_url, or image_base64 required")
 
     # Generate 3D model from image
-    print(f"Generating 3D model: steps={steps}, guidance={guidance_scale}")
+    print(f"Generating 3D model: steps={steps}, guidance={guidance_scale}, octree={octree_resolution}")
     start_time = time.time()
 
     shape_pipeline = load_shape_pipeline()
 
+    # Call pipeline with H100 optimized parameters
     result = shape_pipeline(
         image=input_image,
         num_inference_steps=steps,
         guidance_scale=guidance_scale,
+        dual_guidance_scale=dual_guidance_scale,
+        dual_guidance=True,
         octree_resolution=octree_resolution,
-        target_face_count=face_count,
+        num_chunks=num_chunks,
+        output_type="trimesh",
     )
 
     print(f"3D generation completed in {time.time() - start_time:.1f}s")
@@ -350,8 +351,10 @@ def generate_3d(
                 mesh = result[0]
         else:
             raise ValueError("Empty result from pipeline")
+    elif hasattr(result, 'mesh'):
+        mesh = result.mesh
     else:
-        mesh = getattr(result, 'mesh', result)
+        mesh = result
 
     # Export to buffer
     buffer = io.BytesIO()
@@ -382,9 +385,6 @@ def detect_mesh_file_type(mesh_bytes: bytes) -> Optional[str]:
     if mesh_bytes[:6].lower() == b'solid ':
         return 'stl'
 
-    # Binary STL: 80 byte header + 4 byte triangle count
-    # We can't easily distinguish, but if it's not ASCII and not other formats, assume STL
-
     # PLY: starts with "ply"
     if mesh_bytes[:3].lower() == b'ply':
         return 'ply'
@@ -395,7 +395,6 @@ def detect_mesh_file_type(mesh_bytes: bytes) -> Optional[str]:
         return 'obj'
 
     # Default to GLB since that's what Hunyuan3D outputs
-    # and it's the most common format we'll receive
     return 'glb'
 
 
@@ -414,7 +413,6 @@ def detect_overhangs(mesh, threshold_deg: float = 45.0) -> Dict[str, Any]:
     face_normals = mesh.face_normals
 
     # Calculate angle from vertical (Z-up)
-    # Downward-facing normals have negative Z component
     z_component = face_normals[:, 2]
 
     # Angle from horizontal plane
@@ -437,7 +435,7 @@ def detect_overhangs(mesh, threshold_deg: float = 45.0) -> Dict[str, Any]:
         needs_supports = True
     elif overhang_percentage > 0:
         severity = "info"
-        needs_supports = False  # Minor overhangs might print OK
+        needs_supports = False
     else:
         severity = "ok"
         needs_supports = False
@@ -485,7 +483,7 @@ def check_mesh_quality(mesh) -> List[Dict[str, Any]]:
     try:
         is_winding_consistent = mesh.is_winding_consistent
     except:
-        is_winding_consistent = True  # Assume OK if can't check
+        is_winding_consistent = True
 
     issues.append({
         "check": "normals_consistent",
@@ -611,18 +609,6 @@ def validate_mesh(
 ) -> Dict[str, Any]:
     """
     Comprehensive mesh validation for 3D printing.
-
-    Args:
-        mesh_base64: Base64 encoded mesh file (STL, GLB, OBJ, PLY)
-        printer: Printer preset name
-        target_size_mm: Scale mesh to this size (largest dimension)
-        check_overhangs: Whether to analyze overhangs
-        auto_repair: Attempt automatic repairs
-        custom_build_volume: Override build volume from preset
-        file_type: File type hint (stl, glb, obj, ply) - required for BytesIO loading
-
-    Returns:
-        Validation results with issues and recommendations
     """
     import trimesh
 
@@ -642,10 +628,8 @@ def validate_mesh(
     # Decode mesh
     try:
         if mesh_base64.startswith("data:"):
-            # Extract file type from data URI if present
             data_header = mesh_base64.split(",", 0)[0] if "," in mesh_base64 else ""
             if not file_type and "model/" in data_header:
-                # Try to extract from MIME type like "data:model/stl;base64"
                 mime_part = data_header.split(";")[0].replace("data:", "")
                 if "/" in mime_part:
                     file_type = mime_part.split("/")[1]
@@ -676,10 +660,8 @@ def validate_mesh(
         return {"error": f"Failed to load mesh: {e}"}
 
     # Scale if target size specified
-    original_dimensions = None
     if target_size_mm and hasattr(mesh, 'bounds'):
         bounds = mesh.bounds
-        original_dimensions = (bounds[1] - bounds[0]).tolist()
         current_max = max(bounds[1] - bounds[0])
         if current_max > 0:
             scale_factor = target_size_mm / current_max
@@ -693,7 +675,7 @@ def validate_mesh(
     dim_check = check_print_dimensions(
         mesh,
         printer_settings["build_mm"],
-        target_size_mm=None,  # Already scaled
+        target_size_mm=None,
     )
 
     if not dim_check.get("fits_build_volume", True):
@@ -745,35 +727,29 @@ def validate_mesh(
 
     if auto_repair:
         try:
-            # Track initial state
             initial_watertight = mesh.is_watertight
             initial_vertices = len(mesh.vertices)
             initial_faces = len(mesh.faces)
 
-            # Try PyMeshFix first (much more powerful than trimesh)
+            # Try PyMeshFix first
             pymeshfix_success = False
             try:
                 import pymeshfix
 
                 print("Using PyMeshFix for advanced mesh repair...")
 
-                # Create PyTMesh object for low-level control
                 tin = pymeshfix.PyTMesh(verbose=False)
                 tin.load_array(mesh.vertices.astype(np.float64), mesh.faces.astype(np.int32))
 
-                # Track boundaries (holes) before repair
                 initial_boundaries = tin.boundaries()
                 repair_stats["initial_holes"] = initial_boundaries
 
-                # Step 1: Join nearby disconnected components
                 try:
                     tin.join_closest_components()
                     repairs_made.append("Joined nearby components")
                 except Exception as e:
                     print(f"join_closest_components skipped: {e}")
 
-                # Step 2: Fill ALL holes (nbe=0 means all holes)
-                # refine=True adds vertices to match surrounding density
                 try:
                     holes_filled = tin.fill_small_boundaries(nbe=0, refine=True)
                     if holes_filled > 0:
@@ -781,35 +757,23 @@ def validate_mesh(
                         repair_stats["holes_filled"] = holes_filled
                 except Exception as e:
                     print(f"fill_small_boundaries error: {e}")
-                    # Try without refine
-                    try:
-                        holes_filled = tin.fill_small_boundaries(nbe=0, refine=False)
-                        if holes_filled > 0:
-                            repairs_made.append(f"Filled {holes_filled} holes (simple)")
-                            repair_stats["holes_filled"] = holes_filled
-                    except:
-                        pass
 
-                # Step 3: Remove self-intersections (iterative algorithm)
                 try:
                     tin.clean(max_iters=10, inner_loops=3)
                     repairs_made.append("Removed self-intersections")
                 except Exception as e:
                     print(f"clean() error: {e}")
 
-                # Step 4: Remove small disconnected components (debris)
                 try:
                     tin.remove_smallest_components()
                     repairs_made.append("Removed debris components")
                 except Exception as e:
                     print(f"remove_smallest_components skipped: {e}")
 
-                # Get repaired mesh
                 final_boundaries = tin.boundaries()
                 repair_stats["final_holes"] = final_boundaries
                 vclean, fclean = tin.return_arrays()
 
-                # Create new trimesh from repaired arrays
                 mesh = trimesh.Trimesh(vertices=vclean, faces=fclean)
                 mesh.fix_normals()
                 repairs_made.append("Fixed normals")
@@ -826,25 +790,21 @@ def validate_mesh(
             if not pymeshfix_success:
                 print("Using trimesh basic repair...")
 
-                # Fill holes
                 if not mesh.is_watertight:
                     trimesh.repair.fill_holes(mesh)
                     if mesh.is_watertight:
                         repairs_made.append("Filled holes (trimesh)")
 
-                # Fix normals
                 if hasattr(mesh, 'fix_normals'):
                     mesh.fix_normals()
                     repairs_made.append("Fixed normals")
 
-                # Remove degenerate faces
                 try:
                     mesh.update_faces(mesh.nondegenerate_faces())
                     repairs_made.append("Removed degenerate faces")
                 except Exception:
-                    pass  # Skip if not supported
+                    pass
 
-            # Track final state
             final_watertight = mesh.is_watertight
             final_vertices = len(mesh.vertices)
             final_faces = len(mesh.faces)
@@ -857,7 +817,6 @@ def validate_mesh(
             repair_stats["faces_after"] = final_faces
             repair_stats["pymeshfix_used"] = pymeshfix_success
 
-            # Export repaired mesh
             if repairs_made:
                 buffer = io.BytesIO()
                 mesh.export(buffer, file_type="glb")
@@ -871,8 +830,6 @@ def validate_mesh(
 
     # Calculate summary
     critical_issues = [i for i in issues if i.get("severity") == "critical" and not i.get("passed")]
-    warning_issues = [i for i in issues if i.get("severity") == "warning" and not i.get("passed")]
-
     is_printable = len(critical_issues) == 0
 
     # Generate recommendations
@@ -891,30 +848,26 @@ def validate_mesh(
         if printer_settings["type"] == "resin":
             recommendations.append("Add supports in slicer software (auto-supports usually work well)")
             recommendations.append("Consider tilting model 15-30° to reduce overhangs")
-        else:  # FDM
+        else:
             recommendations.append("Enable supports in slicer (tree supports work well for organic shapes)")
             recommendations.append("Orient largest flat surface on build plate")
 
     validation_time = time.time() - start_time
 
-    # Extract issue/warning strings for the simplified API response
     issue_strings = [i["message"] for i in issues if i.get("severity") == "critical" and not i.get("passed")]
     warning_strings = [i["message"] for i in issues if i.get("severity") == "warning" and not i.get("passed")]
 
-    # Get mesh properties for response
     is_watertight = mesh.is_watertight if hasattr(mesh, 'is_watertight') else False
     has_consistent_normals = mesh.is_winding_consistent if hasattr(mesh, 'is_winding_consistent') else True
     has_positive_volume = mesh.is_volume if hasattr(mesh, 'is_volume') else is_watertight
 
-    # Calculate volume in cm³
     volume_cm3 = None
     if is_watertight and hasattr(mesh, 'volume'):
         try:
-            volume_cm3 = float(mesh.volume) / 1000  # mm³ to cm³
+            volume_cm3 = float(mesh.volume) / 1000
         except:
             pass
 
-    # Format overhangs for API
     overhang_response = None
     if overhang_info:
         overhang_response = {
@@ -930,34 +883,22 @@ def validate_mesh(
         "valid": is_printable,
         "printer": printer,
         "printer_type": printer_settings["type"],
-
-        # Mesh info
         "vertices": len(mesh.vertices) if hasattr(mesh, 'vertices') else 0,
         "faces": len(mesh.faces) if hasattr(mesh, 'faces') else 0,
         "dimensions_mm": dim_check.get("mesh_dimensions_mm"),
         "volume_cm3": round(volume_cm3, 3) if volume_cm3 else None,
-
-        # Validation results
         "is_watertight": is_watertight,
         "has_consistent_normals": has_consistent_normals,
         "has_positive_volume": has_positive_volume,
         "fits_build_volume": dim_check.get("fits_build_volume", False),
-
-        # Issues and warnings
         "issues": issue_strings,
         "warnings": warning_strings,
         "recommendations": recommendations,
-
-        # Overhangs
         "overhangs": overhang_response,
-
-        # Repair info
         "repaired": len(repairs_made) > 0 and repaired_mesh_base64 is not None,
         "repairs_made": repairs_made,
         "repair_stats": repair_stats if repair_stats else None,
         "repaired_mesh_base64": repaired_mesh_base64,
-
-        # Metadata
         "target_size_mm": target_size_mm,
         "validation_time_seconds": round(validation_time, 2),
     }
@@ -976,11 +917,12 @@ def handle_generate(job_input: dict) -> dict:
     if not any([prompt, image_url, image_base64]):
         return {"error": "No input provided. Provide prompt, image_url, or image_base64"}
 
-    # Hunyuan3D-2.1 optimal defaults
-    steps = job_input.get("steps", 50)
+    # H100 optimized defaults - MAXIMUM QUALITY
+    steps = job_input.get("steps", 100)
     guidance_scale = job_input.get("guidance_scale", 7.5)
-    octree_resolution = job_input.get("octree_resolution", 384)
-    face_count = job_input.get("face_count", 90000)
+    dual_guidance_scale = job_input.get("dual_guidance_scale", 10.5)
+    octree_resolution = job_input.get("octree_resolution", 512)
+    num_chunks = job_input.get("num_chunks", 12000)
     output_format = job_input.get("output_format", "glb")
 
     start_time = time.time()
@@ -991,8 +933,9 @@ def handle_generate(job_input: dict) -> dict:
         image_base64=image_base64,
         steps=steps,
         guidance_scale=guidance_scale,
+        dual_guidance_scale=dual_guidance_scale,
         octree_resolution=octree_resolution,
-        face_count=face_count,
+        num_chunks=num_chunks,
         output_format=output_format,
     )
 
@@ -1025,30 +968,22 @@ def handle_generate(job_input: dict) -> dict:
 
 
 def handle_validate(job_input: dict) -> dict:
-    """Handle mesh validation request.
-
-    Supports two input methods:
-    1. mesh_url: URL to download the mesh from (preferred, more efficient)
-    2. mesh_base64: Base64 encoded mesh data (fallback)
-    """
+    """Handle mesh validation request."""
     import requests
     from urllib.parse import urlparse
 
     mesh_url = job_input.get("mesh_url")
     mesh_base64 = job_input.get("mesh_base64")
-    file_type = job_input.get("file_type")  # Optional hint
+    file_type = job_input.get("file_type")
 
     if not mesh_url and not mesh_base64:
         return {"error": "Either mesh_url or mesh_base64 must be provided"}
 
-    # If URL provided, download the mesh directly (more efficient than base64 in JSON)
     if mesh_url:
         try:
-            # Extract file extension from URL if file_type not provided
             if not file_type:
                 parsed = urlparse(mesh_url)
                 path = parsed.path.lower()
-                # Remove query string artifacts
                 path = path.split('?')[0]
                 if path.endswith('.glb'):
                     file_type = 'glb'
@@ -1090,17 +1025,18 @@ def handler(job: dict) -> dict:
     - "generate" (default): Generate 3D model from text/image
     - "validate": Validate mesh for printability
 
-    Generate Input (Hunyuan3D-2.1 - 3.0B model):
+    Generate Input (Hunyuan3D-2.1 - H100 MAX QUALITY):
     {
         "input": {
-            "action": "generate",  # optional, default
+            "action": "generate",
             "prompt": "a detailed dragon figurine",  # OR
             "image_url": "https://...",              # OR
             "image_base64": "data:image/png;base64,...",
-            "steps": 50,           # Higher = more detail (default 50)
-            "guidance_scale": 7.5, # How closely to follow input (default 7.5)
-            "octree_resolution": 384,  # Geometry detail (default 384)
-            "face_count": 90000,   # Mesh complexity (default 90000)
+            "steps": 100,              # Max detail (default 100)
+            "guidance_scale": 7.5,     # Input adherence (default 7.5)
+            "dual_guidance_scale": 10.5,  # Enhanced guidance (default 10.5)
+            "octree_resolution": 512,  # Max geometry detail (default 512)
+            "num_chunks": 12000,       # Processing chunks (default 12000)
             "output_format": "glb"
         }
     }
@@ -1109,13 +1045,13 @@ def handler(job: dict) -> dict:
     {
         "input": {
             "action": "validate",
-            "mesh_url": "https://...",  # URL to download mesh (preferred, efficient)
-            "mesh_base64": "...",  # OR Base64 encoded STL/GLB/OBJ (fallback)
-            "printer": "anycubic_photon_m3",  # or "generic_resin", "generic_fdm"
-            "target_size_mm": 50.0,  # optional scaling
+            "mesh_url": "https://...",
+            "mesh_base64": "...",
+            "printer": "anycubic_photon_m3",
+            "target_size_mm": 50.0,
             "check_overhangs": true,
             "auto_repair": false,
-            "build_volume_mm": {"x": 180, "y": 164, "z": 102}  # optional override
+            "build_volume_mm": {"x": 180, "y": 164, "z": 102}
         }
     }
     """
@@ -1142,7 +1078,9 @@ def handler(job: dict) -> dict:
 # Initialization
 # =============================================================================
 
-print("Initializing Hunyuan3D + Validation worker...")
+print("=" * 60)
+print("Initializing Hunyuan3D-2.1 + Validation worker (H100 optimized)")
+print("=" * 60)
 try:
     if torch.cuda.is_available():
         print(f"GPU: {torch.cuda.get_device_name(0)}")
@@ -1150,6 +1088,7 @@ try:
 
     load_shape_pipeline()
     print("Worker ready!")
+    print("=" * 60)
 except Exception as e:
     print(f"Warning: Failed to pre-load model: {e}")
     print("Model will be loaded on first request")
