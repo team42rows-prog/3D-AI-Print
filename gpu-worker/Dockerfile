@@ -82,14 +82,17 @@ RUN pip install --no-cache-dir \
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download('tencent/Hunyuan3D-2.1')" || true
 
-# Copy handler
-COPY handler.py /app/handler.py
+# Copy handler to hunyuan3d directory (where hy3dshape module is available)
+COPY handler.py /app/hunyuan3d/handler.py
 
-WORKDIR /app
+WORKDIR /app/hunyuan3d
+
+# Add hunyuan3d to PYTHONPATH so hy3dshape can be imported
+ENV PYTHONPATH="/app/hunyuan3d:${PYTHONPATH}"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD python -c "import torch; print(torch.cuda.is_available())" || exit 1
 
-# Run handler
-CMD ["python", "-u", "handler.py"]
+# Run handler from hunyuan3d directory
+CMD ["python", "-u", "/app/hunyuan3d/handler.py"]
