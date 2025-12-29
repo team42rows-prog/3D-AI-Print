@@ -5,10 +5,10 @@ This handler runs on RunPod's serverless GPU infrastructure to:
 1. Generate 3D models from text prompts or images using Hunyuan3D
 2. Validate 3D meshes for printability (overhangs, watertight, etc.)
 
-Hunyuan3D-2 is an image-to-3D model. For text-to-3D, we first generate
+Hunyuan3D-2.1 is an image-to-3D model. For text-to-3D, we first generate
 an image using SDXL-Turbo, then convert that image to 3D.
 
-Version: 2.3.1 - PyMeshFix advanced mesh repair + trimesh fix
+Version: 2.4.0 - Upgraded to Hunyuan3D-2.1 (3.0B model) with maximum quality parameters
 """
 
 import base64
@@ -177,22 +177,26 @@ _text2img_pipeline = None
 
 
 def load_shape_pipeline():
-    """Load Hunyuan3D model for image-to-3D."""
+    """Load Hunyuan3D-2.1 model for image-to-3D (3.0B parameters, highest quality)."""
     global _shape_pipeline
 
     if _shape_pipeline is not None:
         return _shape_pipeline
 
-    print("Loading Hunyuan3D for image-to-3D...")
+    print("Loading Hunyuan3D-2.1 (3.0B model) for image-to-3D...")
     start_time = time.time()
 
     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+
+    # Load Hunyuan3D-2.1 - the latest 3.0B parameter model
+    # This version provides significantly better quality than v2.0
     _shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
         "tencent/Hunyuan3D-2",
+        subfolder="hunyuan3d-dit-v2-1",  # Use the 3.0B v2.1 model
         torch_dtype=torch.float16,
         device_map="auto",
     )
-    print(f"Hunyuan3D loaded in {time.time() - start_time:.1f}s")
+    print(f"Hunyuan3D-2.1 loaded in {time.time() - start_time:.1f}s")
 
     return _shape_pipeline
 
@@ -273,17 +277,23 @@ def generate_3d(
     prompt: Optional[str] = None,
     image_url: Optional[str] = None,
     image_base64: Optional[str] = None,
-    steps: int = 30,
+    steps: int = 50,
     guidance_scale: float = 7.5,
-    octree_resolution: int = 256,
-    face_count: int = 50000,
+    octree_resolution: int = 384,
+    face_count: int = 90000,
     output_format: str = "glb",
 ) -> bytes:
     """
-    Generate a 3D model from text or image.
+    Generate a 3D model from text or image using Hunyuan3D-2.1.
 
     For text-to-3D: First generates an image with SDXL-Turbo, then converts to 3D.
     For image-to-3D: Directly converts the provided image to 3D.
+
+    Default parameters optimized for maximum quality with Hunyuan3D-2.1:
+    - steps: 50 (default for v2.1, higher = more detail)
+    - guidance_scale: 7.5 (balanced adherence to input)
+    - octree_resolution: 384 (default for v2.1, higher = finer geometric detail)
+    - face_count: 90000 (high detail mesh output)
     """
     from PIL import Image
     import requests
@@ -966,10 +976,11 @@ def handle_generate(job_input: dict) -> dict:
     if not any([prompt, image_url, image_base64]):
         return {"error": "No input provided. Provide prompt, image_url, or image_base64"}
 
-    steps = job_input.get("steps", 30)
+    # Hunyuan3D-2.1 optimal defaults
+    steps = job_input.get("steps", 50)
     guidance_scale = job_input.get("guidance_scale", 7.5)
-    octree_resolution = job_input.get("octree_resolution", 256)
-    face_count = job_input.get("face_count", 50000)
+    octree_resolution = job_input.get("octree_resolution", 384)
+    face_count = job_input.get("face_count", 90000)
     output_format = job_input.get("output_format", "glb")
 
     start_time = time.time()
@@ -1079,17 +1090,17 @@ def handler(job: dict) -> dict:
     - "generate" (default): Generate 3D model from text/image
     - "validate": Validate mesh for printability
 
-    Generate Input:
+    Generate Input (Hunyuan3D-2.1 - 3.0B model):
     {
         "input": {
             "action": "generate",  # optional, default
             "prompt": "a detailed dragon figurine",  # OR
             "image_url": "https://...",              # OR
             "image_base64": "data:image/png;base64,...",
-            "steps": 30,
-            "guidance_scale": 7.5,
-            "octree_resolution": 256,
-            "face_count": 50000,
+            "steps": 50,           # Higher = more detail (default 50)
+            "guidance_scale": 7.5, # How closely to follow input (default 7.5)
+            "octree_resolution": 384,  # Geometry detail (default 384)
+            "face_count": 90000,   # Mesh complexity (default 90000)
             "output_format": "glb"
         }
     }
