@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v24 - Use Hunyuan3D-2.1 with hy3dshape
+# Build v25 - Use Hunyuan3D-2.1 with hy3dshape - force no cache
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
