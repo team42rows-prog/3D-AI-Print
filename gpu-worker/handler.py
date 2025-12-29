@@ -189,10 +189,10 @@ def load_shape_pipeline():
     from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
 
     # Load Hunyuan3D-2.1 - the latest 3.0B parameter model
-    # This version provides significantly better quality than v2.0
+    # Note: 2.1 is a separate repo, not a subfolder of 2.0
+    # See: https://huggingface.co/tencent/Hunyuan3D-2.1
     _shape_pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
-        "tencent/Hunyuan3D-2",
-        subfolder="hunyuan3d-dit-v2-1",  # Use the 3.0B v2.1 model
+        "tencent/Hunyuan3D-2.1",
         torch_dtype=torch.float16,
         device_map="auto",
     )
