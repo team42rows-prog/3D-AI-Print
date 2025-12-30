@@ -1,11 +1,14 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v31 - Fix torch version conflict and blinker
+# Build v32 - Set TORCH_CUDA_ARCH_LIST for Docker build without GPU
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/runpod-volume/.cache/huggingface
+# CUDA architectures for build (no GPU during Docker build)
+# 8.0=A100, 8.6=RTX3090, 8.9=RTX4090, 9.0=H100
+ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0+PTX"
 
 WORKDIR /app
 
