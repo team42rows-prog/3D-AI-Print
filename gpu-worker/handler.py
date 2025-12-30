@@ -8,7 +8,7 @@ This handler runs on RunPod's serverless GPU infrastructure (H100) to:
 Hunyuan3D-2.1 is an image-to-3D model with PBR texture support.
 For text-to-3D, we first generate an image using SDXL-Turbo, then convert to 3D.
 
-Version: 3.0.0 - Hunyuan3D-2.1 with H100 optimized max quality parameters
+Version: 3.1.0 - Added Cloudflare R2 upload for large files
 """
 
 import base64
@@ -17,12 +17,86 @@ import os
 import sys
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 
+import boto3
+from botocore.config import Config
 import numpy as np
 import runpod
 import torch
+
+
+# =============================================================================
+# Cloudflare R2 Storage Configuration
+# =============================================================================
+
+# Public R2 development URL
+R2_PUBLIC_URL = "https://pub-db39d0352849406d821a66de8de2433f.r2.dev"
+
+
+def get_r2_client():
+    """Get boto3 client configured for Cloudflare R2."""
+    endpoint_url = os.environ.get("BUCKET_ENDPOINT_URL")
+    access_key = os.environ.get("BUCKET_ACCESS_KEY_ID")
+    secret_key = os.environ.get("BUCKET_SECRET_ACCESS_KEY")
+
+    if not all([endpoint_url, access_key, secret_key]):
+        return None
+
+    return boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(signature_version="s3v4"),
+        region_name="auto",
+    )
+
+
+def upload_to_r2(file_bytes: bytes, filename: str, content_type: str = "model/gltf-binary") -> Optional[str]:
+    """
+    Upload file to Cloudflare R2 and return public URL.
+
+    Args:
+        file_bytes: The file content as bytes
+        filename: The filename to use in the bucket
+        content_type: MIME type of the file
+
+    Returns:
+        Public URL to the file, or None if R2 not configured
+    """
+    client = get_r2_client()
+    if not client:
+        print("R2 not configured, falling back to base64")
+        return None
+
+    bucket_name = os.environ.get("BUCKET_NAME", "42rows-3d-print")
+
+    # Generate unique key with timestamp
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    unique_id = str(uuid.uuid4())[:8]
+    object_key = f"models/{timestamp}_{unique_id}_{filename}"
+
+    try:
+        # Upload file
+        client.put_object(
+            Bucket=bucket_name,
+            Key=object_key,
+            Body=file_bytes,
+            ContentType=content_type,
+        )
+        print(f"Uploaded {len(file_bytes)} bytes to R2: {object_key}")
+
+        # Return public URL
+        public_url = f"{R2_PUBLIC_URL}/{object_key}"
+        print(f"Public URL: {public_url}")
+        return public_url
+
+    except Exception as e:
+        print(f"R2 upload failed: {e}")
+        return None
 
 # Add Hunyuan3D-2.1 to path
 sys.path.insert(0, "/app/hunyuan3d/hy3dshape")
@@ -908,7 +982,7 @@ def validate_mesh(
 # Handler Functions
 # =============================================================================
 
-def handle_generate(job_input: dict) -> dict:
+def handle_generate(job_input: dict, job_id: str = None) -> dict:
     """Handle 3D generation request."""
     prompt = job_input.get("prompt")
     image_url = job_input.get("image_url")
@@ -956,15 +1030,31 @@ def handle_generate(job_input: dict) -> dict:
         vertices = len(mesh.vertices)
         faces = len(mesh.faces)
 
-    glb_base64 = base64.b64encode(glb_bytes).decode("utf-8")
+    # Try to upload to R2 first (for large files)
+    file_size = len(glb_bytes)
+    filename = f"{job_id or 'model'}.glb"
 
-    return {
-        "glb_base64": glb_base64,
+    glb_url = upload_to_r2(glb_bytes, filename)
+
+    result = {
         "generation_time": round(generation_time, 2),
         "vertices": vertices,
         "faces": faces,
-        "file_size_bytes": len(glb_bytes),
+        "file_size_bytes": file_size,
     }
+
+    if glb_url:
+        # R2 upload succeeded - return URL
+        result["glb_url"] = glb_url
+        result["storage"] = "r2"
+        print(f"Returning R2 URL for {file_size} byte file")
+    else:
+        # Fallback to base64 (for small files or if R2 not configured)
+        result["glb_base64"] = base64.b64encode(glb_bytes).decode("utf-8")
+        result["storage"] = "base64"
+        print(f"Returning base64 for {file_size} byte file")
+
+    return result
 
 
 def handle_validate(job_input: dict) -> dict:
@@ -1057,10 +1147,11 @@ def handler(job: dict) -> dict:
     """
     try:
         job_input = job.get("input", {})
+        job_id = job.get("id", "unknown")
         action = job_input.get("action", "generate")
 
         if action == "generate":
-            return handle_generate(job_input)
+            return handle_generate(job_input, job_id=job_id)
         elif action == "validate":
             return handle_validate(job_input)
         else:

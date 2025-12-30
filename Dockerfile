@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v32 - Set TORCH_CUDA_ARCH_LIST for Docker build without GPU
+# Build v33 - Added Cloudflare R2 upload for large files
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
@@ -52,8 +52,8 @@ WORKDIR /app/hunyuan3d
 RUN mkdir -p hy3dpaint/ckpt && \
     wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P hy3dpaint/ckpt || true
 
-# Install runpod
-RUN pip install --no-cache-dir runpod
+# Install runpod and boto3 (for Cloudflare R2 upload)
+RUN pip install --no-cache-dir runpod boto3
 
 # Set PYTHONPATH so hy3dshape can be imported
 ENV PYTHONPATH="/app/hunyuan3d:${PYTHONPATH}"
