@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v30 - Fix blinker distutils conflict
+# Build v31 - Fix torch version conflict and blinker
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
@@ -9,15 +9,9 @@ ENV HF_HOME=/runpod-volume/.cache/huggingface
 
 WORKDIR /app
 
-# Remove system blinker to avoid distutils conflict
-RUN apt-get update && apt-get remove -y python3-blinker || true
-
-# Upgrade to PyTorch 2.5.1 (required by Hunyuan3D-2.1)
-RUN pip install --no-cache-dir \
-    torch==2.5.1 \
-    torchvision==0.20.1 \
-    torchaudio==2.5.1 \
-    --index-url https://download.pytorch.org/whl/cu124
+# Remove system packages that cause distutils conflicts
+RUN apt-get update && apt-get remove -y python3-blinker || true && \
+    rm -rf /var/lib/apt/lists/*
 
 # Clone Hunyuan3D-2.1 repository
 RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git /app/hunyuan3d
@@ -25,14 +19,25 @@ RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git /app/hunyuan3
 WORKDIR /app/hunyuan3d
 
 # Fix bpy version: 4.0 doesn't exist, use 4.1.0 from Blender's PyPI
-RUN sed -i 's/bpy==4.0/bpy==4.1.0/g' requirements.txt
+# Also remove torch/torchvision/torchaudio from requirements (we install specific versions)
+RUN sed -i 's/bpy==4.0/bpy==4.1.0/g' requirements.txt && \
+    sed -i '/^torch/d' requirements.txt && \
+    sed -i '/^torchvision/d' requirements.txt && \
+    sed -i '/^torchaudio/d' requirements.txt
 
-# Install requirements (with Blender's extra index for bpy, ignore-installed for distutils conflicts)
-RUN pip install --no-cache-dir --ignore-installed -r requirements.txt --extra-index-url https://download.blender.org/pypi/
+# Install PyTorch 2.5.1 with CUDA 12.4 FIRST (required by Hunyuan3D-2.1)
+RUN pip install --no-cache-dir \
+    torch==2.5.1 \
+    torchvision==0.20.1 \
+    torchaudio==2.5.1 \
+    --index-url https://download.pytorch.org/whl/cu124
+
+# Install requirements (with Blender's extra index for bpy)
+RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.blender.org/pypi/
 
 # Build custom rasterizer
 WORKDIR /app/hunyuan3d/hy3dpaint/custom_rasterizer
-RUN pip install -e .
+RUN pip install -e . --no-build-isolation
 
 # Compile mesh painter
 WORKDIR /app/hunyuan3d/hy3dpaint/DifferentiableRenderer
