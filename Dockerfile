@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v26 - Fix diffusers and dependencies
+# Build v27 - Add omegaconf
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
@@ -21,7 +21,8 @@ RUN pip install --no-cache-dir \
     transformers==4.46.0 \
     accelerate==1.1.1 \
     safetensors \
-    einops
+    einops \
+    omegaconf
 
 # Clone Hunyuan3D-2.1 repository (has hy3dshape module)
 RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git /app/hunyuan3d
