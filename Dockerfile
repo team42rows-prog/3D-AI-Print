@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v28 - Follow official Hunyuan3D-2.1 installation
+# Build v29 - Fix bpy==4.0 -> bpy==4.1.0 from Blender repo
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
@@ -21,8 +21,11 @@ RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.1.git /app/hunyuan3
 
 WORKDIR /app/hunyuan3d
 
-# Install requirements
-RUN pip install --no-cache-dir -r requirements.txt
+# Fix bpy version: 4.0 doesn't exist, use 4.1.0 from Blender's PyPI
+RUN sed -i 's/bpy==4.0/bpy==4.1.0/g' requirements.txt
+
+# Install requirements (with Blender's extra index for bpy)
+RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.blender.org/pypi/
 
 # Build custom rasterizer
 WORKDIR /app/hunyuan3d/hy3dpaint/custom_rasterizer
