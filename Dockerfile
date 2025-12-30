@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v29 - Fix bpy==4.0 -> bpy==4.1.0 from Blender repo
+# Build v30 - Fix blinker distutils conflict
 
 FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
@@ -8,6 +8,9 @@ ENV PYTHONUNBUFFERED=1
 ENV HF_HOME=/runpod-volume/.cache/huggingface
 
 WORKDIR /app
+
+# Remove system blinker to avoid distutils conflict
+RUN apt-get update && apt-get remove -y python3-blinker || true
 
 # Upgrade to PyTorch 2.5.1 (required by Hunyuan3D-2.1)
 RUN pip install --no-cache-dir \
@@ -24,8 +27,8 @@ WORKDIR /app/hunyuan3d
 # Fix bpy version: 4.0 doesn't exist, use 4.1.0 from Blender's PyPI
 RUN sed -i 's/bpy==4.0/bpy==4.1.0/g' requirements.txt
 
-# Install requirements (with Blender's extra index for bpy)
-RUN pip install --no-cache-dir -r requirements.txt --extra-index-url https://download.blender.org/pypi/
+# Install requirements (with Blender's extra index for bpy, ignore-installed for distutils conflicts)
+RUN pip install --no-cache-dir --ignore-installed -r requirements.txt --extra-index-url https://download.blender.org/pypi/
 
 # Build custom rasterizer
 WORKDIR /app/hunyuan3d/hy3dpaint/custom_rasterizer
