@@ -1088,13 +1088,41 @@ def handle_validate(job_input: dict) -> dict:
                 print(f"Detected file_type from URL: {file_type}")
 
             print(f"Downloading mesh from URL: {mesh_url[:100]}...")
-            response = requests.get(mesh_url, timeout=60)
+            # Increased timeout: 300s for large files (132MB+ needs more time)
+            # Using stream=True for memory efficiency with large files
+            response = requests.get(mesh_url, timeout=300, stream=True)
             response.raise_for_status()
-            mesh_bytes = response.content
+
+            # Read in chunks to handle large files efficiently
+            chunks = []
+            total_size = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    chunks.append(chunk)
+                    total_size += len(chunk)
+                    # Log progress for large files
+                    if total_size % (10 * 1024 * 1024) == 0:  # Every 10MB
+                        print(f"Downloaded {total_size / 1024 / 1024:.1f}MB...")
+
+            mesh_bytes = b''.join(chunks)
             mesh_base64 = base64.b64encode(mesh_bytes).decode('utf-8')
-            print(f"Downloaded {len(mesh_bytes)} bytes from URL")
+            print(f"Downloaded {len(mesh_bytes)} bytes ({len(mesh_bytes) / 1024 / 1024:.1f}MB) from URL")
+        except requests.Timeout as e:
+            return {
+                "error": f"Timeout downloading mesh (300s exceeded for large file): {str(e)}",
+                "success": False,
+                "valid": False,
+                "vertices": 0,
+                "faces": 0,
+            }
         except requests.RequestException as e:
-            return {"error": f"Failed to download mesh from URL: {str(e)}"}
+            return {
+                "error": f"Failed to download mesh from URL: {str(e)}",
+                "success": False,
+                "valid": False,
+                "vertices": 0,
+                "faces": 0,
+            }
 
     return validate_mesh(
         mesh_base64=mesh_base64,
