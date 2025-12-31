@@ -798,6 +798,7 @@ def validate_mesh(
     repairs_made = []
     repair_stats = {}
     repaired_mesh_base64 = None
+    repaired_mesh_url = None
 
     if auto_repair:
         try:
@@ -894,7 +895,21 @@ def validate_mesh(
             if repairs_made:
                 buffer = io.BytesIO()
                 mesh.export(buffer, file_type="glb")
-                repaired_mesh_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                repaired_bytes = buffer.getvalue()
+
+                # Upload repaired mesh to R2 (same as generation)
+                repaired_filename = f"repaired_{time.strftime('%Y%m%d_%H%M%S')}.glb"
+                repaired_mesh_url = upload_to_r2(repaired_bytes, repaired_filename)
+
+                if repaired_mesh_url:
+                    print(f"Repaired mesh uploaded to R2: {repaired_mesh_url}")
+                else:
+                    # Fallback to base64 only for small files
+                    if len(repaired_bytes) < 10 * 1024 * 1024:  # < 10MB
+                        repaired_mesh_base64 = base64.b64encode(repaired_bytes).decode("utf-8")
+                        print(f"Repaired mesh returned as base64 ({len(repaired_bytes)} bytes)")
+                    else:
+                        print(f"WARNING: Repaired mesh too large ({len(repaired_bytes)} bytes) and R2 upload failed")
 
                 print(f"Repair complete: watertight {initial_watertight} -> {final_watertight}")
 
@@ -969,10 +984,11 @@ def validate_mesh(
         "warnings": warning_strings,
         "recommendations": recommendations,
         "overhangs": overhang_response,
-        "repaired": len(repairs_made) > 0 and repaired_mesh_base64 is not None,
+        "repaired": len(repairs_made) > 0 and (repaired_mesh_url is not None or repaired_mesh_base64 is not None),
         "repairs_made": repairs_made,
         "repair_stats": repair_stats if repair_stats else None,
-        "repaired_mesh_base64": repaired_mesh_base64,
+        "repaired_mesh_url": repaired_mesh_url,  # R2 URL (preferred for large files)
+        "repaired_mesh_base64": repaired_mesh_base64,  # Fallback for small files
         "target_size_mm": target_size_mm,
         "validation_time_seconds": round(validation_time, 2),
     }
