@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v37 - Upload repaired mesh to R2 (fix 400 Bad Request for large validation responses)
+# Build v38 - Repaired mesh keeps original format (STL→STL, GLB→GLB) unless output_format specified
 
 FROM nvidia/cuda:12.4.0-cudnn9-devel-ubuntu22.04
 

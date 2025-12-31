@@ -680,9 +680,13 @@ def validate_mesh(
     auto_repair: bool = False,
     custom_build_volume: Optional[Dict[str, float]] = None,
     file_type: Optional[str] = None,
+    output_format: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Comprehensive mesh validation for 3D printing.
+
+    Args:
+        output_format: Format for repaired mesh output. If None, uses input file_type.
     """
     import trimesh
 
@@ -799,6 +803,10 @@ def validate_mesh(
     repair_stats = {}
     repaired_mesh_base64 = None
     repaired_mesh_url = None
+    # Determine output format for repaired mesh: requested > input > default glb
+    export_format = output_format or file_type or "glb"
+    if export_format == "gltf":
+        export_format = "glb"  # trimesh exports gltf as glb
 
     if auto_repair:
         try:
@@ -894,11 +902,12 @@ def validate_mesh(
 
             if repairs_made:
                 buffer = io.BytesIO()
-                mesh.export(buffer, file_type="glb")
+                mesh.export(buffer, file_type=export_format)
                 repaired_bytes = buffer.getvalue()
+                print(f"Exported repaired mesh as {export_format} ({len(repaired_bytes)} bytes)")
 
                 # Upload repaired mesh to R2 (same as generation)
-                repaired_filename = f"repaired_{time.strftime('%Y%m%d_%H%M%S')}.glb"
+                repaired_filename = f"repaired_{time.strftime('%Y%m%d_%H%M%S')}.{export_format}"
                 repaired_mesh_url = upload_to_r2(repaired_bytes, repaired_filename)
 
                 if repaired_mesh_url:
@@ -989,6 +998,7 @@ def validate_mesh(
         "repair_stats": repair_stats if repair_stats else None,
         "repaired_mesh_url": repaired_mesh_url,  # R2 URL (preferred for large files)
         "repaired_mesh_base64": repaired_mesh_base64,  # Fallback for small files
+        "repaired_mesh_format": export_format if (repaired_mesh_url or repaired_mesh_base64) else None,
         "target_size_mm": target_size_mm,
         "validation_time_seconds": round(validation_time, 2),
     }
@@ -1148,6 +1158,7 @@ def handle_validate(job_input: dict) -> dict:
         auto_repair=job_input.get("auto_repair", False),
         custom_build_volume=job_input.get("build_volume_mm"),
         file_type=file_type,
+        output_format=job_input.get("output_format"),  # If specified, override output format
     )
 
 
