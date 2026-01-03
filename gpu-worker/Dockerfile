@@ -1,6 +1,6 @@
-# RunPod Serverless GPU Worker for Hunyuan3D-2.1
+# RunPod Serverless GPU Worker for Hunyuan3D-2.1 + Hunyuan3D-2mv
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v38 - Repaired mesh keeps original format (STL→STL, GLB→GLB) unless output_format specified
+# Build v40 - Added render_3d_preview + generate_multiview with Hunyuan3D-2mv
 
 FROM nvidia/cuda:12.4.0-cudnn9-devel-ubuntu22.04
 
@@ -9,7 +9,7 @@ ENV PYTHONUNBUFFERED=1
 ENV TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0"
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
-# System dependencies
+# System dependencies (including OSMesa for pyrender offscreen rendering)
 RUN apt-get update && apt-get install -y \
     python3.10 \
     python3.10-dev \
@@ -30,7 +30,12 @@ RUN apt-get update && apt-get install -y \
     libglvnd0 \
     ninja-build \
     build-essential \
+    libosmesa6-dev \
+    freeglut3-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Set pyrender to use OSMesa for offscreen rendering
+ENV PYOPENGL_PLATFORM=osmesa
 
 # Set Python 3.10 as default (required by Hunyuan3D-2.1)
 RUN update-alternatives --install /usr/bin/python python /usr/bin/python3.10 1 && \
@@ -72,25 +77,40 @@ RUN mkdir -p hy3dpaint/ckpt && \
     wget -q https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth -P hy3dpaint/ckpt || true
 
 # Install additional dependencies (including boto3 for Cloudflare R2 upload)
+# pyrender + PyOpenGL for offscreen mesh rendering (render_3d_preview)
 RUN pip install --no-cache-dir \
     runpod \
     boto3 \
     pymeshfix \
     networkx \
-    hf_transfer
+    hf_transfer \
+    pyrender \
+    PyOpenGL \
+    PyOpenGL_accelerate
 
 # Download model weights (cached in Docker image for fast cold start)
-# Hunyuan3D-2.1 with all subfolders
+# Hunyuan3D-2.1 with all subfolders (for single-image generation)
 RUN python -c "from huggingface_hub import snapshot_download; \
     snapshot_download('tencent/Hunyuan3D-2.1')" || true
+
+# Clone Hunyuan3D-2 repository (for multi-view generation with 2mv)
+RUN git clone https://github.com/Tencent-Hunyuan/Hunyuan3D-2.git /app/hunyuan3d-2
+
+# Install Hunyuan3D-2 dependencies (if different from 2.1)
+WORKDIR /app/hunyuan3d-2
+RUN pip install --no-cache-dir -r requirements.txt || true
+
+# Download Hunyuan3D-2mv model for multi-view generation
+RUN python -c "from huggingface_hub import snapshot_download; \
+    snapshot_download('tencent/Hunyuan3D-2mv')" || true
 
 # Copy handler to hunyuan3d directory (where hy3dshape module is available)
 COPY handler.py /app/hunyuan3d/handler.py
 
 WORKDIR /app/hunyuan3d
 
-# Add hunyuan3d to PYTHONPATH so hy3dshape can be imported
-ENV PYTHONPATH="/app/hunyuan3d:${PYTHONPATH}"
+# Add hunyuan3d and hunyuan3d-2 to PYTHONPATH for imports
+ENV PYTHONPATH="/app/hunyuan3d:/app/hunyuan3d-2:${PYTHONPATH}"
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
