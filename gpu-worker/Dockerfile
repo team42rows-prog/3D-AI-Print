@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1 + Hunyuan3D-2mv
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v41 - Fix pyrender import for render_3d_preview
+# Build v42 - Force rebuild with pyrender PyOpenGL (cache invalidation)
 
 FROM nvidia/cuda:12.4.0-cudnn9-devel-ubuntu22.04
 
@@ -78,8 +78,9 @@ RUN mkdir -p hy3dpaint/ckpt && \
 
 # Install additional dependencies (including boto3 for Cloudflare R2 upload)
 # pyrender + PyOpenGL for offscreen mesh rendering (render_3d_preview)
+# CACHE_BUST=v42 - Force rebuild to include pyrender
 RUN pip install --no-cache-dir \
-    runpod \
+    runpod==1.7.0 \
     boto3 \
     pymeshfix \
     networkx \
