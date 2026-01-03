@@ -1,6 +1,6 @@
 # RunPod Serverless GPU Worker for Hunyuan3D-2.1 + Hunyuan3D-2mv
 # H100 GPU optimized - Maximum quality 3D generation with PBR textures
-# Build v40 - Added render_3d_preview + generate_multiview with Hunyuan3D-2mv
+# Build v41 - Fix pyrender import for render_3d_preview
 
 FROM nvidia/cuda:12.4.0-cudnn9-devel-ubuntu22.04
 

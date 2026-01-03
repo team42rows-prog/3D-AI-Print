@@ -1,0 +1,69 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Apify/Actor files (don't belong in gpu-worker)
+.actor/
+profiles/
+docs/
+scripts/
+src/
+tests/
+*.md
+!gpu-worker/*.md
+pyproject.toml
+requirements.txt
+
+# Secrets
+.env
+*.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Models/data
+*.stl
+*.glb
+*.obj
+*.ply
+*.gltf
